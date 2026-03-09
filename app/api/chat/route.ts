@@ -6,7 +6,7 @@ import clientPromise from "@/lib/mongodb";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { ObjectId } from "mongodb";
 import axios from "axios";
-import { chromium } from "playwright";
+import * as cheerio from "cheerio";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -333,164 +333,27 @@ async function googleWebSearch(query: string) {
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 
-async function fetchWebsiteContent(
-  url: string,
-  intent?: { wantsContact?: boolean; wantsAbout?: boolean },
-) {
-  let browser;
-
+async function fetchWebsiteContent(url: string) {
   try {
-    browser = await chromium.launch({ headless: true });
-
-    const page = await browser.newPage();
-
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
+    const { data } = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
     });
 
-    await page.waitForTimeout(2000);
+    const $ = cheerio.load(data);
 
-    // Extract raw href values
-    const links = await page.$$eval("a", (as) =>
-      as.map((a) => a.getAttribute("href")).filter(Boolean),
-    );
+    const text = $("body").text();
 
-    const base = new URL(url);
+    return text
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 10000);
 
-    // Convert relative links to absolute
-    const absoluteLinks = links
-      .map((link) => {
-        if (!link) return null;
-        try {
-          return new URL(link, base).href;
-        } catch {
-          return null;
-        }
-      })
-      .filter((link): link is string => Boolean(link));
-
-    console.log("Total links found:", absoluteLinks.length);
-
-    // Keep only internal links
-    const internalLinks = [...new Set(absoluteLinks)].filter((link) => {
-      try {
-        const u = new URL(link);
-
-        return (
-          u.hostname === base.hostname &&
-          u.pathname !== "/" &&
-          !u.pathname.includes("#")
-        );
-      } catch {
-        return false;
-      }
-    });
-
-    console.log("Internal links:", internalLinks);
-    let subPages = internalLinks;
-
-    // prioritize contact page
-    if (intent?.wantsContact) {
-      subPages = internalLinks.filter(
-        (link) =>
-          link.includes("contact") ||
-          link.includes("support") ||
-          link.includes("help"),
-      );
-    }
-
-    // prioritize about page
-    if (intent?.wantsAbout) {
-      subPages = internalLinks.filter((link) => link.includes("about"));
-    }
-
-    // fallback
-    if (subPages.length === 0) {
-      subPages = internalLinks.slice(0, 3);
-    }
-
-    subPages = subPages.slice(0, 3);
-
-    console.log("Subpages to crawl:", subPages);
-
-    let subPageContent = "";
-
-    for (const link of subPages) {
-      try {
-        console.log("Crawling subpage:", link);
-        const subPage = await browser.newPage();
-
-        await subPage.goto(link, {
-          waitUntil: "domcontentloaded",
-          timeout: 15000,
-        });
-
-        const text = await subPage.evaluate(() => document.body.innerText);
-
-        // extract emails
-        const emails =
-          text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi) || [];
-
-        // extract phone numbers
-        const phones =
-          text.match(
-            /(\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}/g,
-          ) || [];
-
-        console.log("Emails found:", emails);
-        console.log("Phones found:", phones);
-
-        subPageContent += `
---- SUBPAGE: ${link} ---
-${text.slice(0, 3000)}
-
-Emails Found: ${emails.join(", ") || "None"}
-Phones Found: ${phones.join(", ") || "None"}
-`;
-
-        subPageContent += `
---- SUBPAGE: ${link} ---
-${text.slice(0, 3000)}
-`;
-
-        await subPage.close();
-      } catch (err) {
-        console.log("Subpage fetch failed:", link);
-      }
-    }
-
-    // Extract visible text from real DOM
-    let content = await page.evaluate(() => document.body.innerText);
-
-    const html = await page.content();
-
-    const dom = new JSDOM(html, { url });
-    const reader = new Readability(dom.window.document);
-    const article = reader.parse();
-
-    if (content.length < 2000 && article?.textContent) {
-      content = article.textContent;
-    }
-
-    console.log("Homepage length:", content.length);
-    console.log("Subpage content length:", subPageContent.length);
-
-    const mainContent = content.replace(/\s+/g, " ").trim().slice(0, 10000);
-
-    return `
---- MAIN PAGE ---
-${mainContent}
-
-${subPageContent}
-`;
-  } catch (err) {
-    console.error("Website fetch error:", err);
+  } catch (error) {
+    console.error("Website fetch error:", error);
     return "";
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 }
 
@@ -520,12 +383,7 @@ export async function POST(req: Request) {
 
     if (urlMatches.length > 0) {
       const contents = await Promise.all(
-        urlMatches.map((url: string) =>
-          fetchWebsiteContent(url, {
-            wantsContact,
-            wantsAbout,
-          }),
-        ),
+        urlMatches.map((url: string) => fetchWebsiteContent(url))
       );
 
       websiteContext = contents

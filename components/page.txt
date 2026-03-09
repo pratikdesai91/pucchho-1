@@ -26,9 +26,9 @@ export type Message = {
   }[];
 
   images?: {
-    link: string;
-    title: string;
-  }[];
+  link: string;
+  title: string;
+}[];
 
   versions?: string[];
   currentVersion?: number;

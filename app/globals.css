@@ -12,6 +12,19 @@
   --font-mono: var(--font-geist-mono);
 }
 
+.custom-border {
+  border-width: 0.5px; /* Adjust this value for a thinner border */
+}
+
+@keyframes spinSmooth {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

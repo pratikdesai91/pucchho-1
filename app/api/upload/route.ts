@@ -1,75 +1,76 @@
-import { NextRequest } from "next/server";
-import { extractTextFromBuffer } from "@/lib/fileExtractor";
-import { chunkText } from "@/lib/chunker";
-import clientPromise from "@/lib/mongodb";
 import OpenAI from "openai";
+import clientPromise from "@/lib/mongodb";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function POST(req: NextRequest) {
+function splitText(text: string, size = 500) {
+
+  const words = text.split(" ");
+  const chunks = [];
+
+  for (let i = 0; i < words.length; i += size) {
+    chunks.push(words.slice(i, i + size).join(" "));
+  }
+
+  return chunks;
+}
+
+export async function POST(req: Request) {
   try {
     const formData = await req.formData();
-    const file = formData.get("file") as File;
-    const userEmail = formData.get("userEmail") as string;
-    const chatId = formData.get("chatId") as string;
 
-    if (!file || !userEmail || !chatId) {
-      return new Response("Missing required fields", { status: 400 });
+    const file = formData.get("file") as File;
+    const chatId = formData.get("chatId") as string;
+    const userEmail = formData.get("userEmail") as string;
+
+    if (!file) {
+      return new Response("No file uploaded", { status: 400 });
     }
 
+    const allowedExtensions = [".txt",".md",".js",".ts",".jsx",".tsx",".json",".html",".css",".py",".java",".cpp",".c",".go",".rs",".php",".csv",".pdf"];
+
+const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+
+if (!allowedExtensions.includes(ext)) {
+  return new Response("File type not supported", { status: 400 });
+}
+
     const buffer = Buffer.from(await file.arrayBuffer());
+    const text = buffer.toString("utf8");
 
-    // 🔹 Extract text
-    const extractedText = await extractTextFromBuffer(
-      buffer,
-      file.name,
-      file.type
-    );
+    const chunks = splitText(text);
 
-    // 🔹 Chunk text
-    const chunks = chunkText(extractedText);
-    console.log("UPLOAD SAVING:", {
-  chatId,
-  userEmail,
-  filename: file.name,
-  chunksCount: chunks.length,
-});
-
-    // 🔹 Save to MongoDB
     const mongo = await clientPromise;
     const db = mongo.db("chats");
 
-    const chunkDocs = [];
+    await db.collection("fileChunks").deleteMany({
+  chatId,
+  filename: file.name
+});
 
-for (let i = 0; i < chunks.length; i++) {
-  const embedding = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: chunks[i],
-  });
+    for (let i = 0; i < chunks.length; i++) {
+      const embedding = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: chunks[i],
+      });
 
-  chunkDocs.push({
-    userEmail,
-    chatId,
-    filename: file.name,
-    chunkIndex: i,
-    text: chunks[i],
-    embedding: embedding.data[0].embedding,
-    createdAt: new Date(),
-  });
-}
+      await db.collection("fileChunks").insertOne({
+        chatId,
+        userEmail,
+        filename: file.name,
+        chunkIndex: i,
+        text: chunks[i],
+        embedding: embedding.data[0].embedding,
+        createdAt: new Date(),
+      });
+    }
 
-await db.collection("fileChunks").insertMany(chunkDocs);
+    return Response.json({ success: true });
 
-    return Response.json({
-      filename: file.name,
-      length: extractedText.length,
-      chunksCount: chunks.length,
-      preview: chunks.slice(0, 2),
-    });
   } catch (error) {
-    console.error(error);
-    return new Response("Server error", { status: 500 });
+    console.error("Upload error:", error);
+    return new Response("Upload failed", { status: 500 });
   }
 }

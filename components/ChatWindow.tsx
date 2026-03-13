@@ -6,6 +6,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import PDFPreview from "@/components/PDFPreview";
 import {
   Volume2,
   Square,
@@ -24,8 +25,8 @@ import {
   X,
   Binoculars,
   Mic,
-  MoreHorizontal,
 } from "lucide-react";
+import remarkBreaks from "remark-breaks";
 import { motion } from "framer-motion";
 import type { Message } from "@/app/page";
 import { useSession } from "next-auth/react";
@@ -36,6 +37,8 @@ import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import type { Element, Text } from "hast";
 import Image from "next/image";
+import CSVPreview from "./CSVPreview";
+import CodePreview from "./CodePreview";
 
 type Chat = {
   id: string;
@@ -65,10 +68,17 @@ export default function ChatWindow({
     setSpeakingIndex(null);
   };
   const [input, setInput] = useState("");
+  const [fileViewer, setFileViewer] = useState<{
+    url: string;
+    type: string;
+  } | null>(null);
   const [selectedModel, setSelectedModel] = useState("gpt-4o-mini");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [expandedMessages, setExpandedMessages] = useState<{
+    [key: number]: boolean;
+  }>({});
   const [viewer, setViewer] = useState<{
     images: { link: string; title: string }[];
     index: number;
@@ -89,10 +99,6 @@ export default function ChatWindow({
   const [imageIndexes, setImageIndexes] = useState<{ [key: number]: number }>(
     {},
   );
-  const [moreMenuIndex, setMoreMenuIndex] = useState<number | null>(null);
-  const [expandedMessages, setExpandedMessages] = useState<{
-    [key: number]: boolean;
-  }>({});
   const [viewMode, setViewMode] = useState<"code" | "preview">("code");
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -113,11 +119,29 @@ export default function ChatWindow({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const lastUserRef = useRef<HTMLDivElement | null>(null);
-  const getFileIcon = (type: string) => {
-    if (type.includes("sheet") || type.includes("csv")) return "📊";
-    if (type.includes("pdf")) return "📕";
-    if (type.includes("image")) return "🖼️";
-    if (type.includes("word")) return "📄";
+  const getFileIcon = (type: string, name: string) => {
+    const ext = name.split(".").pop()?.toLowerCase();
+
+    if (type.startsWith("image/")) return "🖼️";
+
+    if (type.includes("pdf") || ext === "pdf") return "📕";
+
+    if (ext === "csv" || ext === "xlsx" || ext === "xls") return "📊";
+
+    if (ext === "doc" || ext === "docx") return "📄";
+
+    if (ext === "txt") return "📄";
+
+    if (ext === "json") return "🧾";
+
+    if (ext === "js" || ext === "ts") return "📜";
+
+    if (ext === "py") return "🐍";
+
+    if (ext === "html" || ext === "css") return "🌐";
+
+    if (ext === "zip" || ext === "rar") return "🗜️";
+
     return "📁";
   };
 
@@ -230,21 +254,6 @@ export default function ChatWindow({
       );
     }
   };
-
-  function formatSpeech(text: string) {
-    if (!text) return text;
-
-    // capitalize first letter
-    text = text.charAt(0).toUpperCase() + text.slice(1);
-
-    // add period if missing
-    if (!/[.!?]$/.test(text)) {
-      text += ".";
-    }
-
-    return text;
-  }
-
   const handleWebSearchRetry = async (assistantIndex: number) => {
     if (!currentChatId || !currentChat) return;
     setWebSources([]);
@@ -386,6 +395,17 @@ export default function ChatWindow({
       : "What would you like to explore?",
   ];
   const [dynamicPlaceholder, setDynamicPlaceholder] = useState("");
+
+  useEffect(() => {
+    return () => {
+      filePreviews.forEach((item) => {
+        if (item.preview) {
+          URL.revokeObjectURL(item.preview);
+        }
+      });
+    };
+  }, [filePreviews]);
+
   useEffect(() => {
     function handleClickOutside() {
       setShowAllSources(false);
@@ -401,12 +421,6 @@ export default function ChatWindow({
   }, [showAllSources]);
 
   const [interimText, setInterimText] = useState("");
-
-  useEffect(() => {
-    const closeMenu = () => setMoreMenuIndex(null);
-    window.addEventListener("click", closeMenu);
-    return () => window.removeEventListener("click", closeMenu);
-  }, []);
 
   useEffect(() => {
     const SpeechRecognition =
@@ -445,8 +459,7 @@ export default function ChatWindow({
       }
 
       if (finalTranscript) {
-        const formatted = formatSpeech(finalTranscript);
-        setInput((prev) => (prev + " " + formatted).trim());
+        setInput((prev) => (prev + " " + finalTranscript).trim());
       }
 
       setInterimText(interimTranscript);
@@ -739,17 +752,20 @@ export default function ChatWindow({
   //new msg handler
   const handleSend = async () => {
     if (!input.trim()) return;
+    if (recognitionRef.current && isListening) {
+      recognitionRef.current.stop();
+    }
     setWebSources([]);
 
     let isNewChat = false;
 
     const userMessage: Message = {
       role: "user",
-      content: input,
+      content: input || "Analyze the attached file",
       attachments: filePreviews.map((item) => ({
         name: item.file.name,
         type: item.file.type,
-        url: item.preview || undefined, // for images
+        url: item.preview || URL.createObjectURL(item.file),
         fileObject: item.file,
       })),
     };
@@ -793,26 +809,38 @@ export default function ChatWindow({
       textareaRef.current.style.height = "auto";
     }
 
-    if (files.length > 0 && session?.user?.email && chatId) {
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("chatId", chatId);
-        formData.append("userEmail", session.user.email);
+    // Upload files BEFORE asking AI
+async function uploadFiles(chatId: string) {
 
-        await fetch("/api/upload", {
-          method: "POST",
-          body: formData,
-        });
-      }
+  if (!files.length || !session?.user?.email) return;
+
+  for (const file of files) {
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("chatId", chatId);
+    formData.append("userEmail", session.user.email);
+
+    const res = await fetch("/api/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) {
+      throw new Error("File upload failed");
     }
 
+    // 🔴 WAIT until server confirms embeddings saved
+    const data = await res.json();
+    console.log("Upload finished:", data);
+  }
+}
+
+if (files.length && chatId) {await uploadFiles(chatId);}
     // Now clear files
     setFiles([]);
     setFilePreviews([]);
-
-    setFiles([]);
-
+    
     const baseMessages = [...(currentChat?.messages || []), userMessage];
 
     let aiText = "";
@@ -1072,6 +1100,63 @@ export default function ChatWindow({
     }
   };
 
+  const markdownComponents = {
+    h1: ({ children }: any) => (
+      <h1 className="text-2xl font-extrabold mt-6 mb-3">{children}</h1>
+    ),
+
+    h2: ({ children }: any) => {
+      const text = Array.isArray(children)
+        ? children.map((c) => (typeof c === "string" ? c : "")).join("")
+        : String(children);
+
+      const match = text.trim().match(/^(\d+)[.)]\s*(.*)/);
+
+      if (match) {
+        const stepNumber = match[1];
+        const title = match[2];
+
+        return (
+          <h2 className="flex items-center text-lg font-semibold mt-4 mb-2">
+            <span className="inline-flex items-center justify-center w-6 h-6 text-sm font-semibold bg-yellow-600 text-white rounded-md mr-2">
+              {stepNumber}
+            </span>
+            {title}
+          </h2>
+        );
+      }
+
+      return <h2 className="text-lg font-semibold mt-4 mb-2">{children}</h2>;
+    },
+
+    h3: ({ children }: any) => (
+      <h3 className="text-base font-semibold mt-3 mb-1">{children}</h3>
+    ),
+
+    p: ({ children }: any) => <p className="leading-7">{children}</p>,
+
+    ul: ({ children }: any) => (
+      <ul className="list-disc pl-6 space-y-1 my-2">{children}</ul>
+    ),
+
+    ol: ({ children }: any) => (
+      <ol className="list-decimal pl-6 space-y-1 my-2">{children}</ol>
+    ),
+
+    li: ({ children }: any) => <li>{children}</li>,
+
+    a: ({ href, children }: any) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-600 underline hover:text-blue-800"
+      >
+        {children}
+      </a>
+    ),
+  };
+
   const renderedMessages = currentChat?.messages || [];
 
   return (
@@ -1109,28 +1194,19 @@ export default function ChatWindow({
                       key={i}
                       className="relative w-20 h-20 sm:w-24 sm:h-24 border rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center"
                     >
-                      {isImage && item.preview ? (
-                        <Image
-                          src={item.preview!}
-                          alt={file.name}
-                          fill
-                          sizes="96px"
-                          className="object-cover"
-                        />
-                      ) : (
-                        <div className="flex flex-col items-center text-gray-500">
-                          {isPDF ? (
-                            <FileText size={28} />
-                          ) : isDoc ? (
-                            <FileText size={28} />
-                          ) : (
-                            <File size={28} />
-                          )}
-                          <span className="text-[10px] text-center px-1 truncate w-20">
-                            {file.name}
-                          </span>
+                      <div className="flex flex-col items-center justify-center text-gray-600">
+                        <div className="text-2xl">
+                          {getFileIcon(file.type, file.name)}
                         </div>
-                      )}
+
+                        <span className="text-[10px] text-center px-1 truncate w-20 mt-1">
+                          {file.name}
+                        </span>
+
+                        <span className="text-[9px] text-gray-400">
+                          {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </div>
 
                       <button
                         onClick={() => {
@@ -1180,6 +1256,7 @@ export default function ChatWindow({
               {/* Hidden file input */}
               <input
                 type="file"
+                accept=".txt,.pdf,.csv,.js,.ts,.json,.py,.png,.jpg,.jpeg"
                 multiple
                 hidden
                 id="fileUpload"
@@ -1250,7 +1327,7 @@ export default function ChatWindow({
                 <button
                   onClick={handleSend}
                   disabled={!input.trim()}
-                  className={`ml-2 px-4 py-4 rounded-lg transition flex items-center justify-center ${
+                  className={`ml-2 px-4 py-4 rounded-lg transition flex items-center justify-center bg-gray-300 text-gray-500 cursor-not-allowed ${
                     input.trim()
                       ? "bg-black text-white hover:scale-105"
                       : "bg-gray-300 text-gray-500 cursor-not-allowed"
@@ -1306,7 +1383,7 @@ export default function ChatWindow({
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ duration: 0.2 }}
-                      className={`p-3 sm:p-4 rounded-2xl max-w-[99%] wrap-break-word overflow-hidden ${
+                      className={`p-3 sm:p-4 rounded-2xl max-w-[99%] break-words overflow-hidden ${
                         msg.role === "user"
                           ? "bg-gray-100 text-black"
                           : "text-black"
@@ -1400,30 +1477,30 @@ export default function ChatWindow({
                               ),
 
                               h2: ({ children }) => {
+                                // Convert children array to clean string
                                 const text = Array.isArray(children)
                                   ? children
-                                      .map((child) =>
-                                        typeof child === "string" ? child : "",
+                                      .map((c) =>
+                                        typeof c === "string" ? c : "",
                                       )
                                       .join("")
                                   : String(children);
 
                                 const match = text
                                   .trim()
-                                  .match(/^(\d+)\.\s*(.*)/);
+                                  .match(/^(\d+)[.)]\s*(.*)/);
 
-                                // STEP STYLE (1. Step Title)
                                 if (match) {
                                   const stepNumber = match[1];
                                   const title = match[2];
 
                                   return (
-                                    <h2 className="flex items-center text-xl font-bold mt-6 mb-3">
+                                    <h2 className="flex items-center text-lg font-semibold mt-4 mb-2">
                                       <span
                                         className="inline-flex items-center justify-center
-          w-7 h-7 text-sm font-semibold
-          bg-yellow-700 text-white
-          rounded-md mr-2 border border-black"
+      w-6 h-6 text-sm font-semibold
+      bg-yellow-600 text-white
+      rounded-md mr-2"
                                       >
                                         {stepNumber}
                                       </span>
@@ -1433,47 +1510,21 @@ export default function ChatWindow({
                                 }
 
                                 return (
-                                  <h2 className="text-xl sm:text-2xl font-bold mt-6 mb-3 text-gray-900">
+                                  <h2 className="text-lg font-semibold mt-4 mb-2">
                                     {children}
                                   </h2>
                                 );
                               },
 
                               h3: ({ children }) => (
-                                <h3 className="text-lg sm:text-xl font-bold mt-5 mb-2 text-gray-900">
+                                <h3 className="text-base font-semibold mt-3 mb-1">
                                   {children}
                                 </h3>
                               ),
 
-                              p: ({ children }) => {
-                                const extractText = (node: any): string => {
-                                  if (typeof node === "string") return node;
-
-                                  if (Array.isArray(node))
-                                    return node.map(extractText).join("");
-
-                                  if (node?.props?.children)
-                                    return extractText(node.props.children);
-
-                                  return "";
-                                };
-
-                                const text = extractText(children).trim();
-
-                                // Detect section titles
-                                const sectionPattern =
-                                  /^(💡|⚠️|📝|🚀|🔥|📌)?\s*(Tip|Warning|Important|Note|Problem|Solution|Steps?|Example|Summary|Conclusion|Benefits|Key Points)\:?/i;
-
-                                if (sectionPattern.test(text)) {
-                                  return (
-                                    <h3 className="text-xl sm:text-2xl font-bold mt-6 mb-3 text-gray-900">
-                                      {children}
-                                    </h3>
-                                  );
-                                }
-
-                                return <p className="leading-7">{children}</p>;
-                              },
+                              p: ({ children }) => (
+                                <p className="leading-7">{children}</p>
+                              ),
 
                               ul: ({ children }) => (
                                 <ul className="list-disc pl-6 space-y-1 my-2">
@@ -1519,7 +1570,7 @@ export default function ChatWindow({
                               ),
 
                               td: ({ children }) => (
-                                <td className="px-3 sm:px-5 py-2 sm:py-3 text-gray-800 text-xs sm:text-sm wrap-break-word">
+                                <td className="px-3 sm:px-5 py-2 sm:py-3 text-gray-800 text-xs sm:text-sm break-words">
                                   {children}
                                 </td>
                               ),
@@ -1562,14 +1613,19 @@ export default function ChatWindow({
 
                                       <div className="flex items-center gap-2">
                                         <button
-                                          onClick={handleCopy}
+                                          onClick={() =>
+                                            handleCopyMessage(
+                                              msg.content,
+                                              index,
+                                            )
+                                          }
                                           className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded"
                                           title="Copy"
                                         >
                                           {copiedIndex === index ? (
-                                            <Check size={16} />
+                                            <Check size={18} />
                                           ) : (
-                                            <Copy size={16} />
+                                            <Copy size={18} />
                                           )}
                                         </button>
 
@@ -1703,7 +1759,7 @@ export default function ChatWindow({
                           </ReactMarkdown>
 
                           {/* 🔥 AI Action Buttons */}
-                          <div className="flex items-center gap-2 mt-3 text-gray-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition">
+                          <div className="flex items-center gap-1 mt-3 text-gray-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition">
                             {/* Copy - Always visible */}
                             <button
                               title="Copy"
@@ -1729,7 +1785,11 @@ export default function ChatWindow({
                                 <button
                                   title="Like"
                                   onClick={() => handleReaction(index, "like")}
-                                  className={`transition p-1 rounded text-gray-500 hover:text-black hover:bg-gray-200`}
+                                  className={`transition p-1 rounded ${
+                                    reactions[index] === "like"
+                                      ? "text-blue-600 bg-blue-50"
+                                      : "text-gray-500 hover:text-black hover:bg-gray-200"
+                                  }`}
                                 >
                                   <ThumbsUp
                                     size={18}
@@ -1747,7 +1807,11 @@ export default function ChatWindow({
                                   onClick={() =>
                                     handleReaction(index, "dislike")
                                   }
-                                  className={`transition p-1 rounded text-gray-500 hover:text-black hover:bg-gray-200`}
+                                  className={`transition p-1 rounded ${
+                                    reactions[index] === "dislike"
+                                      ? "text-red-600 bg-red-50"
+                                      : "text-gray-500 hover:text-black hover:bg-gray-200"
+                                  }`}
                                 >
                                   <ThumbsDown
                                     size={18}
@@ -1780,8 +1844,8 @@ export default function ChatWindow({
                                     {retryMenuIndex === index && (
                                       <div
                                         className="absolute bottom-full left-0 mb-2 w-40 
-              bg-white border border-gray-200 
-              rounded-xl shadow-xl z-50"
+        bg-white border border-gray-200 
+        rounded-xl shadow-xl z-50"
                                         onClick={(e) => e.stopPropagation()}
                                       >
                                         <button
@@ -1791,7 +1855,7 @@ export default function ChatWindow({
                                           }}
                                           className="flex items-center gap-2 w-full text-left px-3 py-2 text-sm hover:bg-gray-100 transition"
                                         >
-                                          <RefreshCw size={18} />
+                                          <RefreshCw size={14} />
                                           <span>Try Again</span>
                                         </button>
 
@@ -1802,78 +1866,187 @@ export default function ChatWindow({
                                           }}
                                           className="flex items-center gap-2 w-full text-left px-3 py-2 text-sm hover:bg-gray-100 transition"
                                         >
-                                          <Binoculars size={18} />
+                                          <Binoculars size={14} />
                                           <span>Web Search</span>
                                         </button>
                                       </div>
                                     )}
                                   </div>
                                 )}
-                                {/* More menu */}
-                                <div className="relative">
+
+                                {/* Share */}
+                                {permissions.canShare && (
                                   <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setMoreMenuIndex(
-                                        moreMenuIndex === index ? null : index,
-                                      );
-                                    }}
+                                    title="Share"
+                                    onClick={() =>
+                                      navigator.share?.({
+                                        title: "AI Response",
+                                        text: msg.content,
+                                      })
+                                    }
                                     className="hover:text-black hover:bg-gray-200 transition p-1 rounded"
-                                    title="More options"
                                   >
-                                    <MoreHorizontal size={18} />
+                                    <Share2 size={18} />
                                   </button>
-
-                                  {moreMenuIndex === index && (
-                                    <div
-                                      className="absolute bottom-full left-0 mb-2 w-44 bg-white border border-gray-200 rounded-xl shadow-xl z-50"
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
-                                      {/* Share */}
-                                      {permissions.canShare && (
-                                        <button
-                                          onClick={() => {
-                                            setMoreMenuIndex(null);
-                                            navigator.share?.({
-                                              title: "AI Response",
-                                              text: msg.content,
-                                            });
-                                          }}
-                                          className="flex items-center gap-2 w-full text-left px-3 py-2 text-sm hover:bg-gray-100 transition"
-                                        >
-                                          <Share2 size={18} />
-                                          Share
-                                        </button>
-                                      )}
-
-                                      {/* Listen / Stop */}
-                                      {speakingIndex === index ? (
-                                        <button
-                                          onClick={() => {
-                                            setMoreMenuIndex(null);
-                                            stopSpeaking();
-                                          }}
-                                          className="flex items-center gap-2 w-full text-left px-3 py-2 text-sm hover:bg-gray-100 transition text-blue-600"
-                                        >
-                                          <Square size={18} />
-                                          Stop voice
-                                        </button>
-                                      ) : (
-                                        <button
-                                          onClick={() => {
-                                            setMoreMenuIndex(null);
-                                            speakText(msg.content, index);
-                                          }}
-                                          className="flex items-center gap-2 w-full text-left px-3 py-2 text-sm hover:bg-gray-100 transition"
-                                        >
-                                          <Volume2 size={18} />
-                                          Listen
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
+                                )}
                               </>
+                            )}
+
+                            {speakingIndex === index ? (
+                              <button
+                                title="Stop"
+                                onClick={stopSpeaking}
+                                className="text-red-600 transition flex items-center gap-1"
+                              >
+                                <Square size={18} />
+                              </button>
+                            ) : (
+                              <button
+                                title="Listen"
+                                onClick={() => speakText(msg.content, index)}
+                                className="hover:text-black transition flex items-center gap-1"
+                              >
+                                <Volume2 size={18} />
+                              </button>
+                            )}
+                            {msg.sources && msg.sources.length > 0 && (
+                              <div className="">
+                                {/* Top Row */}
+                                <div className="relative flex items-center gap-2 text-sm text-gray-600">
+                                  {/* Icon Stack */}
+                                  <div className="flex items-center -space-x-2">
+                                    {msg.sources
+                                      .slice(0, 3)
+                                      .map((source, i) => {
+                                        let domain = "";
+                                        try {
+                                          domain = new URL(source.link)
+                                            .hostname;
+                                        } catch {
+                                          domain = "";
+                                        }
+
+                                        return (
+                                          <a
+                                            key={i}
+                                            href={source.link}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="w-6 h-6 rounded-full 
+                         bg-white border border-gray-200 
+                         flex items-center justify-center
+                         shadow-sm hover:scale-105 transition"
+                                            title={source.title}
+                                          >
+                                            <img
+                                              src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                                              alt="favicon"
+                                              className="w-3.5 h-3.5"
+                                            />
+                                          </a>
+                                        );
+                                      })}
+
+                                    {/* +N Button */}
+                                    {msg.sources.length > 3 && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setShowAllSources((prev) => !prev);
+                                        }}
+                                        className="w-6 h-6 rounded-full 
+               bg-gray-100 border border-gray-200
+               flex items-center justify-center
+               text-[11px] font-medium text-gray-600
+               hover:bg-gray-200 transition"
+                                        title={`${msg.sources.length - 3} more sources`}
+                                      >
+                                        +{msg.sources.length - 3}
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <span className="ml-1 font-medium">
+                                    Sources
+                                  </span>
+                                </div>
+
+                                {/* Dropdown */}
+                                {showAllSources && (
+                                  <>
+                                    {/* Overlay */}
+                                    <div
+                                      onClick={() => setShowAllSources(false)}
+                                      className="fixed inset-0 z-40"
+                                    />
+
+                                    {/* Sidebar */}
+                                    <div
+                                      className="fixed top-0 right-0 h-full w-80 
+                 bg-white shadow-2xl z-50
+                 p-4 overflow-y-auto
+                 animate-slideIn"
+                                    >
+                                      {/* Header */}
+                                      <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-sm font-semibold text-gray-700">
+                                          Sources
+                                        </h2>
+
+                                        <button
+                                          onClick={() =>
+                                            setShowAllSources(false)
+                                          }
+                                          className="text-gray-400 hover:text-black"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+
+                                      {/* Source List */}
+                                      <div className="space-y-3">
+                                        {msg.sources.map((source, i) => {
+                                          let domain = "";
+                                          try {
+                                            domain = new URL(source.link)
+                                              .hostname;
+                                          } catch {
+                                            domain = "";
+                                          }
+
+                                          return (
+                                            <a
+                                              key={i}
+                                              href={source.link}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="block p-3 rounded-xl border border-gray-200 hover:bg-gray-50 transition"
+                                            >
+                                              <div className="flex items-start gap-3">
+                                                <img
+                                                  src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`}
+                                                  alt="favicon"
+                                                  className="w-5 h-5 mt-1"
+                                                />
+
+                                                <div>
+                                                  <div className="text-sm font-medium text-gray-800 line-clamp-2">
+                                                    {source.title}
+                                                  </div>
+
+                                                  <div className="text-xs text-gray-400 mt-1">
+                                                    {domain}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </a>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
@@ -1887,7 +2060,9 @@ export default function ChatWindow({
                               {/* Header */}
                               <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b">
                                 <div className="flex items-center gap-2 text-sm font-medium">
-                                  <span>{getFileIcon(file.type)}</span>
+                                  <span>
+                                    {getFileIcon(file.type, file.name)}
+                                  </span>
                                   <span className="truncate max-w-50">
                                     {file.name}
                                   </span>
@@ -1920,35 +2095,236 @@ export default function ChatWindow({
                               </div>
 
                               {/* Preview Area */}
-                              <div className="p-3 text-sm text-gray-600 max-h-48 overflow-auto">
-                                {file.type.startsWith("image/") && file.url ? (
-                                  <Image
-                                    src={file.url}
-                                    alt={file.name}
-                                    width={400}
-                                    height={300}
-                                    className="rounded-md"
-                                  />
-                                ) : (
-                                  <div>Click ↗ to preview file</div>
-                                )}
+                              <div className="p-3 text-sm text-gray-600 max-h-55 overflow-auto">
+                                {(() => {
+                                  if (
+                                    file.type.startsWith("image/") &&
+                                    file.url
+                                  ) {
+                                    return (
+                                      <Image
+                                        src={file.url}
+                                        alt={file.name}
+                                        width={400}
+                                        height={300}
+                                        className="rounded-md"
+                                      />
+                                    );
+                                  }
+
+                                  if (
+                                    file.type === "application/pdf" &&
+                                    file.url
+                                  ) {
+                                    return <PDFPreview url={file.url} />;
+                                  }
+
+                                  if (file.name.endsWith(".csv") && file.url) {
+                                    return <CSVPreview url={file.url} />;
+                                  }
+
+                                  if (
+                                    file.name.endsWith(".js") ||
+                                    file.name.endsWith(".ts") ||
+                                    file.name.endsWith(".py") ||
+                                    file.name.endsWith(".json")
+                                  ) {
+                                    return <CodePreview url={file.url!} />;
+                                  }
+
+                                  if (file.name.endsWith(".txt") && file.url) {
+                                    return (
+                                      <iframe
+                                        src={file.url}
+                                        className="w-full h-40 rounded-md"
+                                      />
+                                    );
+                                  }
+
+                                  return (
+                                    <div className="text-gray-400 text-sm">
+                                      Click ↗ to preview file
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           ))}
 
-                          <div className="max-w-full sm:max-w-175 text-[15px] leading-7">
-                            <div
-                              className={`whitespace-pre-wrap wrap-break-word ${
-                                expandedMessages[index] ? "" : "line-clamp-4"
-                              }`}
-                            >
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeHighlight]}
+                          <div className="max-w-full sm:max-w-175 text-[15px] leading-7 space-y-2">
+                            {msg.images &&
+                              msg.images.length > 0 &&
+                              (() => {
+                                const currentIndex = imageIndexes[index] ?? 0;
+                                const currentImage = msg.images![currentIndex];
+
+                                const prev = () => {
+                                  setImageIndexes((prev) => ({
+                                    ...prev,
+                                    [index]:
+                                      currentIndex === 0
+                                        ? msg.images!.length - 1
+                                        : currentIndex - 1,
+                                  }));
+                                };
+
+                                const next = () => {
+                                  setImageIndexes((prev) => ({
+                                    ...prev,
+                                    [index]:
+                                      currentIndex === msg.images!.length - 1
+                                        ? 0
+                                        : currentIndex + 1,
+                                  }));
+                                };
+
+                                return (
+                                  <div className="mb-4 space-y-2">
+                                    {/* LARGE IMAGE */}
+                                    <div className="relative w-full h-60 rounded-xl overflow-hidden">
+                                      <img
+                                        src={currentImage.link}
+                                        alt={currentImage.title}
+                                        onClick={() =>
+                                          setViewer({
+                                            images: msg.images!,
+                                            index: currentIndex,
+                                          })
+                                        }
+                                        className="w-full h-full object-cover transition-all duration-300 cursor-zoom-in"
+                                      />
+                                      {/* LEFT */}
+                                      <button
+                                        onClick={prev}
+                                        className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 text-white px-2 py-1 rounded-md"
+                                      >
+                                        ←
+                                      </button>
+
+                                      {/* RIGHT */}
+                                      <button
+                                        onClick={next}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 text-white px-2 py-1 rounded-md"
+                                      >
+                                        →
+                                      </button>
+                                    </div>
+
+                                    {/* THUMBNAILS */}
+                                    <div className="flex gap-2 overflow-x-auto">
+                                      {msg.images!.map((img, i) => (
+                                        <img
+                                          key={i}
+                                          src={img.link}
+                                          alt={img.title}
+                                          onClick={() =>
+                                            setImageIndexes((prev) => ({
+                                              ...prev,
+                                              [index]: i,
+                                            }))
+                                          }
+                                          className={`h-16 w-24 object-cover rounded-lg cursor-pointer border ${
+                                            i === currentIndex
+                                              ? "border-black"
+                                              : "border-gray-200"
+                                          }`}
+                                        />
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            {viewer && (
+                              <div
+                                className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50"
+                                onClick={() => setViewer(null)}
                               >
-                                {msg.content.trim()}
-                              </ReactMarkdown>
-                            </div>
+                                <img
+                                  src={viewer.images[viewer.index].link}
+                                  alt="preview"
+                                  draggable={false}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => {
+                                    dragStart.current = {
+                                      x: e.clientX - drag.x,
+                                      y: e.clientY - drag.y,
+                                    };
+                                  }}
+                                  onMouseMove={(e) => {
+                                    if (!dragStart.current) return;
+                                    setDrag({
+                                      x: e.clientX - dragStart.current.x,
+                                      y: e.clientY - dragStart.current.y,
+                                    });
+                                  }}
+                                  onMouseUp={() => (dragStart.current = null)}
+                                  style={{
+                                    transform: `translate(${drag.x}px, ${drag.y}px)`,
+                                  }}
+                                  className="max-h-[85vh] max-w-[95vw] rounded-xl shadow-2xl cursor-grab select-none"
+                                />
+
+                                {/* CLOSE */}
+                                <button
+                                  onClick={() => setViewer(null)}
+                                  className="absolute top-6 right-6 text-white text-2xl"
+                                >
+                                  ✕
+                                </button>
+
+                                {/* PREVIOUS */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewer((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            index:
+                                              prev.index === 0
+                                                ? prev.images.length - 1
+                                                : prev.index - 1,
+                                          }
+                                        : prev,
+                                    );
+                                  }}
+                                  className="absolute left-3 sm:left-6 text-white text-3xl sm:text-4xl p-2"
+                                >
+                                  ←
+                                </button>
+
+                                {/* NEXT */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewer((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            index:
+                                              prev.index ===
+                                              prev.images.length - 1
+                                                ? 0
+                                                : prev.index + 1,
+                                          }
+                                        : prev,
+                                    );
+                                  }}
+                                  className="absolute right-6 text-white text-4xl"
+                                >
+                                  →
+                                </button>
+                              </div>
+                            )}
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm, remarkBreaks]}
+                              rehypePlugins={[rehypeHighlight]}
+                              components={markdownComponents}
+                            >
+                              {expandedMessages[index]
+                                ? msg.content.trim()
+                                : msg.content.trim().slice(0, 200)}
+                            </ReactMarkdown>
 
                             {msg.content.length > 200 && (
                               <button
@@ -2041,20 +2417,19 @@ export default function ChatWindow({
                         key={i}
                         className="relative w-20 h-20 sm:w-24 sm:h-24 border rounded-lg overflow-hidden bg-gray-50 flex items-center justify-center"
                       >
-                        {isImage && item.preview ? (
-                          <Image
-                            src={item.preview}
-                            alt={file.name}
-                            className="object-cover w-full h-full"
-                          />
-                        ) : (
-                          <div className="flex flex-col items-center text-gray-500">
-                            <FileText size={28} />
-                            <span className="text-[10px] text-center px-1 truncate w-20">
-                              {file.name}
-                            </span>
+                        <div className="flex flex-col items-center justify-center text-gray-600">
+                          <div className="text-2xl">
+                            {getFileIcon(file.type, file.name)}
                           </div>
-                        )}
+
+                          <span className="text-[10px] text-center px-1 truncate w-20 mt-1">
+                            {file.name}
+                          </span>
+
+                          <span className="text-[9px] text-gray-400">
+                            {(file.size / 1024).toFixed(1)} KB
+                          </span>
+                        </div>
 
                         <button
                           onClick={() => {
@@ -2228,6 +2603,29 @@ export default function ChatWindow({
       )}
       {showAccountPopup && (
         <Account onClose={() => setShowAccountPopup(false)} />
+      )}
+      {fileViewer && (
+        <div
+          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center"
+          onClick={() => setFileViewer(null)}
+        >
+          <div
+            className="bg-white rounded-xl p-4 max-w-5xl w-full max-h-[90vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {fileViewer.type.startsWith("image/") && (
+              <img src={fileViewer.url} className="w-full" />
+            )}
+
+            {fileViewer.type.includes("pdf") && (
+              <iframe src={fileViewer.url} className="w-full h-[80vh]" />
+            )}
+
+            {fileViewer.type.includes("text") && (
+              <iframe src={fileViewer.url} className="w-full h-[80vh]" />
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

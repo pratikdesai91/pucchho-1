@@ -1,12 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import OpenAI from "openai";
 import { getServerSession } from "next-auth";
-import clientPromise from "@/lib/mongodb";
+import clientPromise from "../../../lib/mongodb";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import type { ObjectId } from "mongodb";
 import axios from "axios";
-import { chromium } from "playwright";
+import * as cheerio from "cheerio";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -67,91 +66,204 @@ async function googleImageSearch(query: string) {
   }
 }
 
-function detectIntent(input: string) {
-  if (
-    /node|express|nextjs|tailwind|css|html|sql|database|backend|frontend|code|javascript|react|bug|error|api|function|typescript/i.test(
-      input,
-    )
-  ) {
-    return "coding";
-  }
-
-  if (
-    /write|article|blog|seo|linkedin post|essay|tell me about|who is|history of/i.test(
-      input,
-    )
-  ) {
-    return "article";
-  }
-
-  if (/story|fiction|fantasy|poem|novel/i.test(input)) {
-    return "story";
-  }
-
-  if (/explain|what is|how does|why/i.test(input)) {
-    return "explanation";
-  }
-
-  return "general";
-}
-
 function buildSystemPrompt(type: string, firstName: string) {
   switch (type) {
-    case "coding":
-      return `
+  case "coding":
+  return `
+The user's first name is ${firstName}.
 
-  The user's first name is ${firstName}.
-
-IMPORTANT:
-- Address the user as ${firstName} when greeting them.
+IMPORTANT
+- Address the user as ${firstName} when greeting them (when appropriate).
 - Never introduce yourself as ${firstName}.
+- Highlight important words using **bold markdown**.
+- Example: **Important concept**, **Key step**, **Warning**, **Tip**.
+- Use bold for:
+  • key terms
+  • important instructions
+  • warnings
+  • conclusions
 
-Communication Style:
+1. First acknowledge the user's request in 1–2 natural sentences.
+2. Mention what you saw in the uploaded file if a file exists.
+3. Explain the issue briefly.
+4. THEN show the code if necessary.
 
-- Use emojis where helpful (💡 🚀 ⚠️ ✅ 🧠).
-- Use section dividers with five dashes:
+  note: When showing numbered steps ALWAYS format them like:
+
+## 1. Step title
+## 2. Step title
+## 3. Step title
+
+You are a senior software engineer helping with programming.
+
+Your responses should adapt to the user's request.
+
+Do NOT always follow the same structure.
+Only use sections when they improve clarity.
 
 -----
 
-- Use **Markdown headings** for important sections.
+🧠 First understand the user's intent.
 
-Formatting guidelines:
+Common situations include:
 
-## Major sections (H2)
-Use for important sections like:
-- Problem
-- Solution
-- Updated Code
-- Explanation
+1️⃣ NEW_CODE  
+User asks to create or generate code.
 
-### Sub sections (H3)
-Use for smaller explanations or tips.
+2️⃣ CODE_REVIEW  
+User provides code and asks to review or improve it.
 
-Example style:
+3️⃣ CODE_PLACEMENT  
+User asks where to paste or integrate code.
 
-## 🔍 Problem
-Explain the issue.
+4️⃣ BUG_FIX  
+User asks to fix an error or broken code.
+
+5️⃣ EXPLANATION  
+User asks how something works.
+
+Choose the best response style for the situation.
+
+Do NOT mention these categories in the response.
 
 -----
 
-## ✅ Solution
-Explain the fix.
+At the end of your answer, suggest 2–3 helpful next questions the user might ask.
+
+-----
+
+🎯 Suggested response styles (use only when helpful):
+
+NEW_CODE example sections:
+
+## 🚀 Overview
+Short explanation of what the code does.
 
 -----
 
 ## 💻 Code
+Provide working code.
 
-\`\`\`ts
-code here
-\`\`\`
+-----
+
+## 🧠 How it works
+Explain briefly with bullet points.
 
 -----
 
 ### 💡 Tip
-Helpful suggestion.
+Optional improvement.
 
-Use headings naturally when they improve readability.
-Do NOT force headings in every response.`;
+-----
+
+ask for next helpfull question with options.
+
+-----
+
+Ask for next steps with 
+
+CODE_REVIEW example sections:
+
+## 🔍 Code Review
+Explain what the code does.
+
+-----
+
+## ⚠️ Issues Found
+Problems or improvements.
+
+-----
+
+## ✅ Improved Version
+Provide corrected code.
+
+-----
+
+CODE_PLACEMENT example sections:
+
+Start with a short explanation of where the code belongs.
+
+-----
+
+ask for next helpfull question with options.
+
+-----
+
+## 📍 Where To Add This Code
+Explain the correct file or location.
+
+-----
+
+## 1️⃣ Find This Part In Your File
+Show the existing code snippet.
+
+-----
+
+## 2️⃣ Replace It With This
+Provide updated code.
+
+-----
+
+If useful:
+
+## 3️⃣ Final Result
+Show the final code block.
+
+-----
+
+### 💡 Tip
+Optional suggestion.
+
+-----
+
+ask for next helpfull question with options.
+
+-----
+
+BUG_FIX example sections:
+
+## 🔍 Problem
+Explain the bug.
+
+-----
+
+## ✅ Fix
+Explain the solution.
+
+-----
+
+## 💻 Updated Code
+Provide the corrected code.
+
+-----
+
+EXPLANATION example sections:
+
+## 🧠 Concept
+Explain the idea.
+
+-----
+
+## 💻 Example
+Provide code example.
+
+-----
+
+ask for next helpfull question with options.
+
+-----
+
+Formatting guidelines:
+
+- Use emojis when helpful (🚀 💡 ⚠️ 🧠).
+- Always produce valid markdown.
+- Leave a blank line before lists.
+- Use headings when useful.
+- Avoid unnecessary sections.
+- Only show code that matters.
+- Avoid repeating the same structure every response.
+- Respond naturally like an experienced engineer helping a teammate.
+`;
 
     case "article":
       return `
@@ -163,6 +275,20 @@ IMPORTANT:
 - You are NOT ${firstName}.
 - Address the user as ${firstName} when greeting them.
 - Never introduce yourself as ${firstName}.
+- Highlight important words using **bold markdown**.
+- Example: **Important concept**, **Key step**, **Warning**, **Tip**.
+- Use bold for:
+  • key terms
+  • important instructions
+  • warnings
+  • conclusions
+
+  note: When showing numbered steps ALWAYS format them like:
+
+## 1. Step title
+## 2. Step title
+## 3. Step title
+
 You are a professional content writer.
 use emoji and Medium size and semi bold font for subheaders.
 Write engaging, modern, readable content.
@@ -177,7 +303,22 @@ IMPORTANT:
 - The user is named ${firstName}.
 - You are NOT ${firstName}.
 - Address the user as ${firstName} when greeting them.
-- Never introduce yourself as ${firstName}. chat with human behave, try to understand user emotion and reply with same emosion. use emojis for attractive read. use --- for all sections. Bold important points.
+- Never introduce yourself as ${firstName}. 
+- Highlight important words using **bold markdown**.
+- Example: **Important concept**, **Key step**, **Warning**, **Tip**.
+- Use bold for:
+  • key terms
+  • important instructions
+  • warnings
+  • conclusions
+
+  note: When showing numbered steps ALWAYS format them like:
+
+## 1. Step title
+## 2. Step title
+## 3. Step title
+
+chat with human behave, try to understand user emotion and reply with same emosion. use emojis for attractive read. use --- for all sections. Bold important points.
 use emoji and Medium size and semi bold font for subheaders.
 create tables if needed or compare.`;
   }
@@ -198,7 +339,7 @@ async function googleWebSearch(query: string) {
 
     return items.map((item: any) => ({
       title: item.title,
-      snippet: item.snippet,
+      snippet: item.snippet.slice(0, 300),
       link: item.link,
     }));
   } catch (error) {
@@ -207,167 +348,27 @@ async function googleWebSearch(query: string) {
   }
 }
 
-import { JSDOM } from "jsdom";
-import { Readability } from "@mozilla/readability";
-
-async function fetchWebsiteContent(
-  url: string,
-  intent?: { wantsContact?: boolean; wantsAbout?: boolean },
-) {
-  let browser;
-
+async function fetchWebsiteContent(url: string) {
   try {
-    browser = await chromium.launch({ headless: true });
-
-    const page = await browser.newPage();
-
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
+    const { data } = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
     });
 
-    await page.waitForTimeout(2000);
+    const $ = cheerio.load(data);
 
-    // Extract raw href values
-    const links = await page.$$eval("a", (as) =>
-      as.map((a) => a.getAttribute("href")).filter(Boolean),
-    );
+    const text = $("body").text();
 
-    const base = new URL(url);
+    return text
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 10000);
 
-    // Convert relative links to absolute
-    const absoluteLinks = links
-      .map((link) => {
-        if (!link) return null;
-        try {
-          return new URL(link, base).href;
-        } catch {
-          return null;
-        }
-      })
-      .filter((link): link is string => Boolean(link));
-
-    console.log("Total links found:", absoluteLinks.length);
-
-    // Keep only internal links
-    const internalLinks = [...new Set(absoluteLinks)].filter((link) => {
-      try {
-        const u = new URL(link);
-
-        return (
-          u.hostname === base.hostname &&
-          u.pathname !== "/" &&
-          !u.pathname.includes("#")
-        );
-      } catch {
-        return false;
-      }
-    });
-
-    console.log("Internal links:", internalLinks);
-    let subPages = internalLinks;
-
-    // prioritize contact page
-    if (intent?.wantsContact) {
-      subPages = internalLinks.filter(
-        (link) =>
-          link.includes("contact") ||
-          link.includes("support") ||
-          link.includes("help"),
-      );
-    }
-
-    // prioritize about page
-    if (intent?.wantsAbout) {
-      subPages = internalLinks.filter((link) => link.includes("about"));
-    }
-
-    // fallback
-    if (subPages.length === 0) {
-      subPages = internalLinks.slice(0, 3);
-    }
-
-    subPages = subPages.slice(0, 3);
-
-    console.log("Subpages to crawl:", subPages);
-
-    let subPageContent = "";
-
-    for (const link of subPages) {
-      try {
-        console.log("Crawling subpage:", link);
-        const subPage = await browser.newPage();
-
-        await subPage.goto(link, {
-          waitUntil: "domcontentloaded",
-          timeout: 15000,
-        });
-
-        const text = await subPage.evaluate(() => document.body.innerText);
-
-        // extract emails
-        const emails =
-          text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi) || [];
-
-        // extract phone numbers
-        const phones =
-          text.match(
-            /(\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}/g,
-          ) || [];
-
-        console.log("Emails found:", emails);
-        console.log("Phones found:", phones);
-
-        subPageContent += `
---- SUBPAGE: ${link} ---
-${text.slice(0, 3000)}
-
-Emails Found: ${emails.join(", ") || "None"}
-Phones Found: ${phones.join(", ") || "None"}
-`;
-
-        subPageContent += `
---- SUBPAGE: ${link} ---
-${text.slice(0, 3000)}
-`;
-
-        await subPage.close();
-      } catch (err) {
-        console.log("Subpage fetch failed:", link);
-      }
-    }
-
-    // Extract visible text from real DOM
-    let content = await page.evaluate(() => document.body.innerText);
-
-    const html = await page.content();
-
-    const dom = new JSDOM(html, { url });
-    const reader = new Readability(dom.window.document);
-    const article = reader.parse();
-
-    if (content.length < 2000 && article?.textContent) {
-      content = article.textContent;
-    }
-
-    console.log("Homepage length:", content.length);
-    console.log("Subpage content length:", subPageContent.length);
-
-    const mainContent = content.replace(/\s+/g, " ").trim().slice(0, 10000);
-
-    return `
---- MAIN PAGE ---
-${mainContent}
-
-${subPageContent}
-`;
-  } catch (err) {
-    console.error("Website fetch error:", err);
+  } catch (error) {
+    console.error("Website fetch error:", error);
     return "";
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 }
 
@@ -382,14 +383,7 @@ export async function POST(req: Request) {
     const lastUserMessage =
       [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
-    const wantsContact = /contact|email|phone|address|support/i.test(
-      lastUserMessage,
-    );
-
-    const wantsAbout = /about|company|who are you|who is/i.test(
-      lastUserMessage,
-    );
-
+  
     // Detect URL in user message
     const urlMatches = lastUserMessage.match(/https?:\/\/[^\s]+/g) || [];
 
@@ -397,12 +391,7 @@ export async function POST(req: Request) {
 
     if (urlMatches.length > 0) {
       const contents = await Promise.all(
-        urlMatches.map((url: string) =>
-          fetchWebsiteContent(url, {
-            wantsContact,
-            wantsAbout,
-          }),
-        ),
+        urlMatches.map((url: string) => fetchWebsiteContent(url))
       );
 
       websiteContext = contents
@@ -450,20 +439,22 @@ Return JSON:
     // ✅ Safe parsing
     const judgeContent = judge.choices[0]?.message?.content || "{}";
 
-    const judgeResult: {
-      needsSearch?: boolean;
-      searchQuery?: string;
-      confidence?: number;
-    } = JSON.parse(judgeContent);
+    let judgeResult: any = {};
+
+try {
+  judgeResult = JSON.parse(judgeContent);
+} catch {
+  judgeResult = {
+    needsSearch: false,
+    confidence: 0,
+    searchQuery: lastUserMessage,
+  };
+}
 
     // ✅ Final decision
     let needsWebSearch = false;
 
-    const factPattern =
-      /tell me about|who is|who was|information about|info about|biography of|bio of/i.test(
-        lastUserMessage,
-      );
-
+    
     if (urlMatches.length > 0 && !forceWeb) {
       needsWebSearch = false;
     } else if (forceWeb) {
@@ -498,7 +489,7 @@ Return JSON:
         {
           role: "system",
           content:
-            "Classify this into: coding, article, story, explanation, general. Only return the label.",
+            "Classify this into: coding, article, story, explanation, file, general. Only return the label.",
         },
         {
           role: "user",
@@ -508,15 +499,18 @@ Return JSON:
       temperature: 0,
     });
 
-    if ((needsWebSearch && entityPattern) || forceWeb) {
-      imageResults = await googleImageSearch(
-        judgeResult.searchQuery || lastUserMessage,
-      );
-    }
-
-    const intent =
+    let intent =
       classification.choices[0]?.message?.content?.trim().toLowerCase() ||
       "general";
+
+      if (
+  lastUserMessage.toLowerCase().includes("file") ||
+  lastUserMessage.toLowerCase().includes("attached") ||
+  lastUserMessage.toLowerCase().includes("document") ||
+  lastUserMessage.toLowerCase().includes("pdf")
+) {
+  intent = "file";
+}
 
     let fileContext = "";
 
@@ -552,6 +546,8 @@ Return JSON:
         .find({ chatId, userEmail })
         .toArray();
 
+        console.log("FILE CHUNKS FOUND:", allChunks.length);
+
       function cosineSimilarity(a: number[], b: number[]) {
         const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
         const normA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
@@ -566,9 +562,28 @@ Return JSON:
         }),
       );
 
-      const topChunks = scored.sort((a, b) => b.score - a.score).slice(0, 5);
+      // Get best matching chunks
+const topChunks = scored.sort((a, b) => b.score - a.score).slice(0, 5);
 
-      fileContext = topChunks.map((c) => c.text).join("\n\n");
+fileContext = topChunks.map((c) => c.text).join("\n\n");
+
+// If files exist in this chat, always attach more context
+if (allChunks.length > 0) {
+  const moreChunks = scored.sort((a, b) => b.score - a.score).slice(0, 5);
+
+  fileContext = moreChunks
+    .map((c) => `File: ${c.filename}\n${c.text}`)
+    .join("\n\n");
+}
+
+// If user explicitly asks about file, include more context
+if (
+  lastUserMessage.toLowerCase().includes("file") ||
+  lastUserMessage.toLowerCase().includes("attached")
+) {
+  const moreChunks = scored.sort((a, b) => b.score - a.score).slice(0, 5);
+  fileContext = moreChunks.map((c) => c.text).join("\n\n");
+}
     }
 
     const systemPrompt = buildSystemPrompt(intent, firstName);
@@ -625,19 +640,26 @@ When using web info, mention the source naturally.
         : []),
 
       ...(fileContext
-        ? [
-            {
-              role: "system",
-              content: `
-Use the following retrieved knowledge if relevant.
-If not relevant, ignore it.
+  ? [
+      {
+        role: "system",
+        content: `
+The user uploaded a file.
 
-Retrieved Context:
+You MUST answer using the uploaded file content.
+
+Rules:
+- If the user asks about the file, ONLY use the file content.
+- Do not invent information not present in the file.
+- If the answer is not in the file, say:
+  "This information is not present in the uploaded file."
+
+FILE CONTENT:
 ${fileContext}
 `,
-            },
-          ]
-        : []),
+      },
+    ]
+  : []),
 
       ...messages,
     ];
@@ -714,7 +736,7 @@ ${fileContext}
     // ----------------------
     // MODEL DECISION (SERVER)
     // ----------------------
-    const MODEL_SWITCH_LIMIT = 500;
+    const MODEL_SWITCH_LIMIT = 300;
 
     const safeModel = !session
       ? "gpt-4o-mini"
@@ -762,14 +784,6 @@ ${fileContext}
           controller.enqueue(
             encoder.encode(
               `\n__SOURCES__${JSON.stringify(webResults)}__END_SOURCES__`,
-            ),
-          );
-        }
-
-        if (imageResults.length > 0) {
-          controller.enqueue(
-            encoder.encode(
-              `\n__IMAGES__${JSON.stringify(imageResults)}__END_IMAGES__`,
             ),
           );
         }
